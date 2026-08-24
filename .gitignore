@@ -1,0 +1,40 @@
+# Entornos y cachés de Python
+.venv/
+venv/
+**/.venv/
+**/venv/
+__pycache__/
+*.py[cod]
+
+# Datos generados por la aplicación y Frigate
+runtime/
+media/
+config/*.db
+config/.jwt_secret
+config/.exports
+config/.search_stats.json
+config/.timeline
+config/.vacuum
+config/model_cache/
+mosquitto/data/
+mosquitto/log/
+
+# Configuración local y secretos
+config/config.yml
+config/backup_config.yaml
+mosquitto/config/passwd
+.env
+!.env.example
+
+# Activos no distribuibles: modelos grandes, caras de referencia y capturas
+assets/models/*
+!assets/models/README.md
+assets/restricted_faces/*
+!assets/restricted_faces/README.md
+analisis-caras/
+
+# IDE y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

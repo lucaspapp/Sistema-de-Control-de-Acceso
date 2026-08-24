@@ -1,0 +1,30 @@
+# Copiar como config/config.yml y adaptar a la instalación local.
+mqtt:
+  enabled: true
+  host: mosquitto
+  port: 7777
+  user: frigate
+  password: CAMBIAR_EN_LOCAL
+
+detectors:
+  cpu1:
+    type: cpu
+
+objects:
+  track:
+    - person
+
+cameras:
+  entrada:
+    ffmpeg:
+      inputs:
+        - path: rtsp://USUARIO:CONTRASENA@HOST:554/ruta-del-stream
+          roles:
+            - detect
+    detect:
+      enabled: true
+      width: 1920
+      height: 1080
+      fps: 5
+
+version: 0.17-0
