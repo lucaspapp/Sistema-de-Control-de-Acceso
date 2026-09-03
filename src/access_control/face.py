@@ -45,6 +45,14 @@ def obtener_embedding(imagen):
     if aligned is None or aligned.size==0:return None
     return face_recognizer.feature(aligned)
 
+def validar_imagen_referencia(contenido: bytes) -> bool:
+    """Comprueba que una foto subida se pueda usar como referencia facial."""
+    if not contenido:return False
+    imagen=cv2.imdecode(np.frombuffer(contenido,np.uint8),cv2.IMREAD_COLOR)
+    if imagen is None or imagen.size==0:return False
+    if face_detector is None or face_recognizer is None:cargar_modelos()
+    return obtener_embedding(imagen) is not None
+
 def cargar_prohibidos():
     # Producción usa únicamente perfiles administrados desde la web/SQLite.
     # assets/restricted_faces queda preservado como fuente heredada, sin uso.
@@ -52,8 +60,9 @@ def cargar_prohibidos():
     for person in person_for_recognition():
         path = FACES_DIR / person['image_path']
         img=cv2.imread(str(path)); emb=obtener_embedding(img) if img is not None else None
+        profile_type='prohibido' if person['kind']=='prohibited' else 'autoexcluido'
         if emb is not None:
-            personas_prohibidas[person['name']]=emb; print(f"[FACE] Prohibido cargado desde la base: {person['name']}")
+            personas_prohibidas[person['name']]=emb; print(f"[FACE] Perfil {profile_type} cargado desde la base: {person['name']}")
         else:
             print(f"[FACE] No se cargó {person['name']}: la foto no contiene una cara válida o clara.")
 

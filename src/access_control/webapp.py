@@ -12,6 +12,7 @@ from flask import Flask, abort, flash, redirect, render_template, request, send_
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+from face import validar_imagen_referencia
 from prohibited_store import FACES_DIR, RUNTIME_DIR, alert_history, connection, delete_person, get_person, initialize, latest_alert, people_by_kind, prohibited_people
 from settings import load_local_env
 
@@ -98,6 +99,17 @@ def add_person(kind):
     if not name or not effective_date or not image or not has_allowed_extension(image.filename) or (kind == "prohibited" and (not reason or not reported_by)):
         flash("Completá todos los campos obligatorios y cargá una imagen JPG, PNG o WEBP.", "error")
         return render_template("person_form.html", kind=kind), 400
+    image_content = image.read()
+    try:
+        face_is_valid = validar_imagen_referencia(image_content)
+    except (FileNotFoundError, RuntimeError):
+        app.logger.exception("No se pudo validar la foto de referencia")
+        flash("No se pudo preparar el reconocimiento facial. Verificá que los modelos estén instalados.", "error")
+        return render_template("person_form.html", kind=kind), 503
+    if not face_is_valid:
+        flash("La foto no contiene una cara válida y clara. Usá una imagen frontal, bien iluminada y sin filtros.", "error")
+        return render_template("person_form.html", kind=kind), 400
+    image.stream.seek(0)
     extension = secure_filename(image.filename).rsplit(".", 1)[1].lower()
     filename = f"{secrets.token_hex(16)}.{extension}"
     image.save(FACES_DIR / filename)
