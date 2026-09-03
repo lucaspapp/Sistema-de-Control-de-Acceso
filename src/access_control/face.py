@@ -1,9 +1,11 @@
 import os
 import cv2, time
+import threading
 import numpy as np
 import requests
 from pathlib import Path
 from settings import load_local_env
+from prohibited_store import FACES_DIR, person_for_recognition
 
 PROJECT_ROOT=Path(__file__).resolve().parents[2]
 load_local_env()
@@ -12,8 +14,8 @@ HISTORIAL_PROHIBIDOS.mkdir(parents=True,exist_ok=True)
 FRIGATE_URL=os.getenv('FRIGATE_URL', 'http://127.0.0.1:5000')
 YUNET_MODEL=MODEL_DIR/'face_detection_yunet_2023mar.onnx'
 SFACE_MODEL=MODEL_DIR/'face_recognition_sface_2021dec.onnx'
-RECOGNITION_THRESHOLD=0.40; REQUIRED_CONFIRMATIONS=3; MAX_SAMPLES_PER_TRACKING=6; SAMPLE_INTERVAL=0.7
-MIN_FACE_WIDTH=45; MIN_FACE_HEIGHT=45; FACE_DETECTION_THRESHOLD=0.75
+RECOGNITION_THRESHOLD=0.40; REQUIRED_CONFIRMATIONS=1; MAX_SAMPLES_PER_TRACKING=60; SAMPLE_INTERVAL=0.7
+MIN_FACE_WIDTH=45; MIN_FACE_HEIGHT=45; FACE_DETECTION_THRESHOLD=0.55
 
 face_detector=None; face_recognizer=None; personas_prohibidas={}; http_session=requests.Session()
 
@@ -44,12 +46,16 @@ def obtener_embedding(imagen):
     return face_recognizer.feature(aligned)
 
 def cargar_prohibidos():
-    personas_prohibidas.clear(); PROHIBIDOS_DIR.mkdir(parents=True,exist_ok=True)
-    for p in sorted(PROHIBIDOS_DIR.iterdir()):
-        if not p.is_file() or p.suffix.lower() not in ('.jpg','.jpeg','.png','.webp'):continue
-        img=cv2.imread(str(p)); emb=obtener_embedding(img) if img is not None else None
-        if emb is not None: personas_prohibidas[p.stem]=emb; print(f'[FACE] Prohibido cargado: {p.stem}')
-        else: print(f'[FACE] No se encontró cara válida en {p.name}')
+    # Producción usa únicamente perfiles administrados desde la web/SQLite.
+    # assets/restricted_faces queda preservado como fuente heredada, sin uso.
+    personas_prohibidas.clear()
+    for person in person_for_recognition():
+        path = FACES_DIR / person['image_path']
+        img=cv2.imread(str(path)); emb=obtener_embedding(img) if img is not None else None
+        if emb is not None:
+            personas_prohibidas[person['name']]=emb; print(f"[FACE] Prohibido cargado desde la base: {person['name']}")
+        else:
+            print(f"[FACE] No se cargó {person['name']}: la foto no contiene una cara válida o clara.")
 
 def reconocer(imagen):
     emb=obtener_embedding(imagen)
@@ -62,15 +68,28 @@ def reconocer(imagen):
     if best>=RECOGNITION_THRESHOLD:return {'status':'MATCH','name':name,'score':best}
     return {'status':'UNKNOWN','name':None,'score':max(0.0,best)}
 
-def obtener_snapshot(event_id):
+def obtener_snapshot(event_id, camera=None):
+    """Obtiene una captura del evento y usa la cámara como respaldo.
+
+    Frigate puede demorar unos segundos en generar la snapshot de un evento
+    recién creado; el respaldo evita descartar el tracking en ese intervalo.
+    """
     url=f'{FRIGATE_URL}/api/events/{event_id}/snapshot-clean.webp'
-    for _ in range(3):
+    for _ in range(5):
         try:
             r=http_session.get(url,timeout=3)
             if r.status_code!=200:time.sleep(.15);continue
             img=cv2.imdecode(np.frombuffer(r.content,np.uint8),cv2.IMREAD_COLOR)
             if img is not None and img.size:return img
         except requests.RequestException:time.sleep(.15)
+    if camera:
+        try:
+            r=http_session.get(f'{FRIGATE_URL}/api/{camera}/latest.jpg',timeout=3)
+            if r.status_code==200:
+                img=cv2.imdecode(np.frombuffer(r.content,np.uint8),cv2.IMREAD_COLOR)
+                if img is not None and img.size:return img
+        except requests.RequestException:
+            pass
     return None
 
 def recortar_persona(img,box):
@@ -85,13 +104,27 @@ def guardar_historial_prohibido(imagen,tracking_id,nombre,score):
     from datetime import datetime
     if imagen is None or imagen.size==0:return None
     d=HISTORIAL_PROHIBIDOS/datetime.now().strftime('%Y-%m-%d');d.mkdir(parents=True,exist_ok=True)
-    p=d/f'{datetime.now().strftime("%H-%M-%S")}_{tracking_id}_{nombre}_{score:.3f}.jpg';cv2.imwrite(str(p),imagen);return str(p)
+    p=d/f'{datetime.now().strftime("%H-%M-%S")}_{tracking_id}_{nombre}_{score:.3f}.jpg';cv2.imwrite(str(p),imagen)
+    return str(p.relative_to(HISTORIAL_PROHIBIDOS.parent)).replace('\\', '/')
 
 class FaceAnalyzer:
     def __init__(self):
-        cargar_modelos();cargar_prohibidos();self.trackings={}
+        self._opencv_lock=threading.RLock()
+        with self._opencv_lock:
+            cargar_modelos();cargar_prohibidos()
+        self.trackings={};self.last_reload=time.monotonic()
     def analizar_tracking(self,tracking_id,imagen):
-        now=time.monotonic(); st=self.trackings.setdefault(tracking_id,{'samples':0,'confirmations':{},'scores':{},'last_sample':0.0,'alerted':False})
+        # FaceDetectorYN y FaceRecognizerSF no son seguros para uso concurrente.
+        # Hay un hilo por persona, por lo que se serializa el acceso a OpenCV.
+        with self._opencv_lock:
+            return self._analizar_tracking(tracking_id,imagen)
+    def _analizar_tracking(self,tracking_id,imagen):
+        now=time.monotonic()
+        # Permite que perfiles agregados desde la web estén disponibles sin
+        # reiniciar el servicio de reconocimiento.
+        if now-self.last_reload>=30:
+            cargar_prohibidos();self.last_reload=now
+        st=self.trackings.setdefault(tracking_id,{'samples':0,'confirmations':{},'scores':{},'last_sample':0.0,'alerted':False})
         if st['alerted']:return {'status':'MATCH','name':st['name'],'score':st['score'],'confirmed':True}
         if st['samples']>=MAX_SAMPLES_PER_TRACKING:return {'status':'UNKNOWN','name':None,'score':0.0,'confirmed':False}
         if now-st['last_sample']<SAMPLE_INTERVAL:return None
@@ -101,3 +134,7 @@ class FaceAnalyzer:
         avg=sum(st['scores'][n])/len(st['scores'][n]);confirmed=st['confirmations'][n]>=REQUIRED_CONFIRMATIONS and avg>=RECOGNITION_THRESHOLD
         if confirmed:st.update(alerted=True,name=n,score=avg);return {'status':'MATCH','name':n,'score':avg,'confirmed':True,'confirmations':st['confirmations'][n]}
         return {'status':'MATCH','name':n,'score':s,'confirmed':False,'confirmations':st['confirmations'][n]}
+    def olvidar_tracking(self, tracking_id):
+        """Libera las muestras cuando Frigate deja de seguir a la persona."""
+        with self._opencv_lock:
+            self.trackings.pop(tracking_id, None)

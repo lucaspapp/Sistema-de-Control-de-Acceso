@@ -5,7 +5,7 @@ ENTRADA_ZONAS=['zona_entrada','zona_pasando','zona_paso']; SALIDA_ZONAS=['zona_s
 class Tracker:
     def __init__(self):self.personas={};self.entradas=0;self.salidas=0
     def crear(self,tid):
-        if tid not in self.personas:self.personas[tid]={'entrada_step':0,'salida_step':0,'entrada_estado':'activo','salida_estado':'activo','entrada_contada':False,'salida_contada':False,'last_seen':time.time()}
+        if tid not in self.personas:self.personas[tid]={'entrada_step':0,'salida_step':0,'entrada_estado':'activo','salida_estado':'activo','entrada_contada':False,'salida_contada':False,'face_checked':False,'last_seen':time.time()}
         return self.personas[tid]
     def limpiar(self):
         now=time.time()
@@ -28,7 +28,14 @@ class Tracker:
         if a.get('label')!='person':return None
         tid=a.get('id')
         if not tid:return None
-        self.crear(tid)['last_seen']=time.time();actuales=set((a.get('current_zones') or [])+(a.get('entered_zones') or []))
+        persona=self.crear(tid);persona['last_seen']=time.time()
+        # El panel GoldenJack no cuenta ingresos/salidas: cada tracking de
+        # persona de Frigate se analiza una sola vez, en cualquier cámara.
+        if not persona['face_checked']:
+            persona['face_checked']=True
+            self.limpiar()
+            return {'type':'entrada','tracking_id':tid,'camera':a.get('camera','unknown'),'event_id':tid,'box':a.get('box')}
+        actuales=set((a.get('current_zones') or [])+(a.get('entered_zones') or []))
         ent=self.secuencia(tid,ENTRADA_ZONAS,'entrada',actuales);sal=self.secuencia(tid,SALIDA_ZONAS,'salida',actuales);self.limpiar()
         if ent:return {'type':'entrada','tracking_id':tid,'camera':a.get('camera','unknown'),'event_id':tid,'box':a.get('box')}
         if sal:return {'type':'salida','tracking_id':tid,'camera':a.get('camera','unknown'),'event_id':tid,'box':a.get('box')}
